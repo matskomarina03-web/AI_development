@@ -32,12 +32,10 @@
 власний `LLMError`, а зводить усе до `ProviderError`.
 """
 
-from typing import Iterator
+import time
+from typing import Callable, Iterator
 
 from .base import Chunk, ProviderError, Request, Result
-
-import time
-from typing import Iterator
 
 from openai import (
     OpenAI,
@@ -49,6 +47,52 @@ from openai import (
     InternalServerError,
     RateLimitError,
 )
+
+
+class _OpenAIStream:
+    def __init__(
+        self,
+        stream,
+        handle_error: Callable[[Exception], ProviderError],
+    ) -> None:
+        self._stream = stream
+        self._handle_error = handle_error
+        self._closed = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> Chunk:
+        try:
+            part = next(self._stream)
+        except StopIteration:
+            raise
+        except Exception as error:
+            raise self._handle_error(error) from error
+
+        usage = None
+        if part.usage:
+            usage = {
+                "prompt_tokens": part.usage.prompt_tokens,
+                "completion_tokens": part.usage.completion_tokens,
+                "total_tokens": part.usage.total_tokens,
+            }
+
+        text = ""
+        finish_reason = None
+        if part.choices:
+            choice = part.choices[0]
+            text = choice.delta.content or ""
+            finish_reason = choice.finish_reason
+
+        return Chunk(text=text, usage=usage, finish_reason=finish_reason)
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            self._stream.close()
+
+
 class OpenAICompatProvider:
     """Провайдер поверх OpenAI-сумісного API."""
 
@@ -175,7 +219,6 @@ class OpenAICompatProvider:
     def stream(self, request: Request) -> Iterator[Chunk]:
         """Віддавати фрагменти відповіді в міру надходження."""
         model = request.model or self.model
-        stream = None
 
         try:
             stream = self.client.chat.completions.create(
@@ -187,36 +230,7 @@ class OpenAICompatProvider:
                 stream=True,
                 stream_options={"include_usage": True},
             )
-
-            for part in stream:
-                usage = None
-
-                if part.usage:
-                    usage = {
-                        "prompt_tokens": part.usage.prompt_tokens,
-                        "completion_tokens": part.usage.completion_tokens,
-                        "total_tokens": part.usage.total_tokens,
-                    }
-
-                text = ""
-                finish_reason = None
-
-                if part.choices:
-                    choice = part.choices[0]
-                    text = choice.delta.content or ""
-                    finish_reason = choice.finish_reason
-
-                yield Chunk(
-                    text=text,
-                    usage=usage,
-                    finish_reason=finish_reason,
-                )
-
-        except ProviderError:
-            raise
         except Exception as error:
             raise self._handle_error(error) from error
 
-        finally:
-            if stream is not None:
-                stream.close()
+        return _OpenAIStream(stream, self._handle_error)

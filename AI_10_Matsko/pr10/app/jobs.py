@@ -68,8 +68,9 @@ class Draft:
     `status` — `queued`, `running`, `done`, `failed`, `cancelled`.
     `text` — накопичений текст. `attempts`, `provider`, `model`,
     `fallback` — звідки взявся результат. `error` — остаточна помилка,
-    якщо є: `kind`, `message`, `retryable`. `elapsed` — секунди, наприклад
-    `{"first_token": 0.8, "total": 4.1}`. `warnings` — зауваження до
+    якщо є: `kind`, `message`, `retryable`, `request_id`. `elapsed` —
+    секунди, наприклад `{"first_token": 0.8, "total": 4.1}`.
+    `warnings` — зауваження до
     чернетки з `drafting.check`. `events` — журнал подій для потоку;
     у знімок на сторінку не входить.
     """
@@ -274,7 +275,8 @@ def _run_draft(draft: Draft, sample: dict):
             draft.error = {
                 "kind": exc.kind,
                 "message": exc.message,
-                "retryable": exc.retryable
+                "retryable": exc.retryable,
+                "request_id": draft.request_id,
             }
 
             draft.events.append({
@@ -293,7 +295,8 @@ def _run_draft(draft: Draft, sample: dict):
             draft.error = {
                 "kind": "internal_error",
                 "message": "Не вдалося згенерувати чернетку.",
-                "retryable": False
+                "retryable": False,
+                "request_id": draft.request_id,
             }
 
             draft.events.append({

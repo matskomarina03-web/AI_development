@@ -119,8 +119,7 @@
     return data;
   }
 
-  // Тіло помилки може бути {"detail": "..."} (FastAPI за замовчуванням) або
-  // вашим форматом {"error": {"kind": ..., "message": ...}} — показуємо, що є.
+  // Помилки API мають єдиний формат із видом, ознакою повтору й ID запиту.
   function describeError(data, status) {
     if (data && data.error && typeof data.error === 'object') {
       const e = data.error;
@@ -374,6 +373,7 @@
     const div = el('div', 'box error');
     div.style.marginTop = '.6rem';
     div.append(el('div', '', `${KIND_TEXT[error.kind] || error.kind || 'Збій'}: ${error.message || ''}`));
+    if (error.request_id) div.append(el('div', 'muted', `Запит ${error.request_id}`));
     const hint = el('div', 'muted', error.retryable ? 'Збій тимчасовий — можна повторити.' : 'Повтор, найімовірніше, не допоможе.');
     div.append(hint);
     if (error.retryable) {

@@ -14,18 +14,105 @@
 """
 
 import json
+import logging
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 from typing import Iterator
-from fastapi import FastAPI, Request,HTTPException
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import gateway, jobs, limits, samples
 
 app = FastAPI(title="Помічник оператора — ПР10")
+logger = logging.getLogger(__name__)
 
 INDEX_PAGE = Path(__file__).parent / "templates" / "index.html"
+
+
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    request.state.request_id = uuid.uuid4().hex
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request.state.request_id
+    return response
+
+
+def _error_response(
+    request: Request,
+    status_code: int,
+    kind: str,
+    message: str,
+    retryable: bool,
+    headers: dict | None = None,
+) -> JSONResponse:
+    request_id = getattr(request.state, "request_id", uuid.uuid4().hex)
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error": {
+                "kind": kind,
+                "message": message,
+                "retryable": retryable,
+                "request_id": request_id,
+            }
+        },
+        headers=headers,
+    )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_error_handler(request: Request, exc: StarletteHTTPException):
+    detail = exc.detail
+    if isinstance(detail, dict):
+        kind = detail.get("error") or detail.get("kind")
+        message = detail.get("message")
+    else:
+        kind = None
+        message = detail if isinstance(detail, str) else None
+
+    if not kind:
+        kind = {
+            404: "not_found",
+            422: "invalid_request",
+            429: "rate_limited",
+        }.get(exc.status_code, "http_error")
+    if not message:
+        message = "Запит не вдалося виконати."
+
+    retryable = exc.status_code in (408, 425, 429) or exc.status_code >= 500
+    return _error_response(
+        request, exc.status_code, kind, message, retryable, exc.headers
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    return _error_response(
+        request,
+        422,
+        "invalid_request",
+        "Некоректний запит.",
+        False,
+    )
+
+
+@app.exception_handler(Exception)
+async def unexpected_error_handler(request: Request, exc: Exception):
+    logger.exception(
+        "Unhandled request error (request_id=%s)",
+        getattr(request.state, "request_id", "unknown"),
+    )
+    return _error_response(
+        request,
+        500,
+        "internal_error",
+        "Внутрішня помилка сервера.",
+        False,
+    )
 
 
 class DraftIn(BaseModel):
@@ -145,7 +232,10 @@ def api_draft(draft_id: str) -> dict:
     if draft is None:
         raise HTTPException(
             status_code=404,
-            detail="Чернетку не знайдено."
+            detail={
+                "error": "draft_not_found",
+                "message": "Чернетку не знайдено.",
+            },
         )
 
     return draft_to_dict(draft)
@@ -164,7 +254,10 @@ def api_events(draft_id: str, request: Request) -> StreamingResponse:
     if jobs.get(draft_id) is None:
         raise HTTPException(
             status_code=404,
-            detail="Чернетку не знайдено."
+            detail={
+                "error": "draft_not_found",
+                "message": "Чернетку не знайдено.",
+            },
         )
     try:
         since = int(request.headers.get("last-event-id") or 0)
@@ -192,12 +285,18 @@ def api_cancel(draft_id: str) -> dict:
     except KeyError:
         raise HTTPException(
             status_code=404,
-            detail="Чернетку не знайдено."
+            detail={
+                "error": "draft_not_found",
+                "message": "Чернетку не знайдено.",
+            },
         )
     except ValueError:
         raise HTTPException(
             status_code=409,
-            detail="Чернетка вже завершена."
+            detail={
+                "error": "draft_already_finished",
+                "message": "Чернетка вже завершена.",
+            },
         )
 
     return draft_to_dict(draft)
