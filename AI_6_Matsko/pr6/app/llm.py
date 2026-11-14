@@ -54,6 +54,10 @@ class LLMError(Exception):
     чи справа `app/rag.py` — вирішуєте ви.
     """
 
+    def __init__(self, message: str, status_code: int = 502):
+        super().__init__(message)
+        self.status_code = status_code
+
 
 def get_client():
     """Повернути готовий до роботи клієнт сервісу.
@@ -167,7 +171,10 @@ def ask(question: str, context: str) -> dict:
     question = question.strip()
 
     if not question:
-        raise LLMError("Питання не може бути порожнім.")
+        raise LLMError(
+            "Питання не може бути порожнім.",
+            status_code=422,
+        )
 
     if not context.strip():
         raise LLMError("Контекст для моделі порожній.")
@@ -187,31 +194,42 @@ def ask(question: str, context: str) -> dict:
         )
 
     except Exception as exc:
-        error_text = str(exc).lower()
+        status_code = getattr(exc, "status_code", None)
+        error_name = type(exc).__name__
 
-        if "timeout" in error_text:
+        if error_name == "APITimeoutError":
             raise LLMError(
-                "Час очікування відповіді від моделі вичерпано."
+                "Час очікування відповіді від моделі вичерпано.",
+                status_code=504,
             ) from exc
 
-        if "429" in error_text or "rate limit" in error_text:
+        if error_name == "APIConnectionError":
             raise LLMError(
-                "Перевищено ліміт запитів до моделі."
+                "Сервіс моделі недоступний.",
+                status_code=503,
             ) from exc
 
-        if "503" in error_text or "unavailable" in error_text:
+        if status_code == 429:
             raise LLMError(
-                "Модель Gemini тимчасово недоступна через "
-                "високе навантаження. Спробуйте повторити запит пізніше."
+                "Перевищено ліміт запитів до моделі.",
+                status_code=429,
             ) from exc
 
-        if "401" in error_text or "unauthorized" in error_text:
+        if status_code == 503:
             raise LLMError(
-                "Невірний або недійсний API-ключ."
+                "Сервіс моделі тимчасово недоступний.",
+                status_code=503,
+            ) from exc
+
+        if status_code in (401, 403):
+            raise LLMError(
+                "Помилка API-ключа або доступу до моделі.",
+                status_code=502,
             ) from exc
 
         raise LLMError(
-            f"Помилка мовної моделі: {exc}"
+            f"Помилка мовної моделі: {exc}",
+            status_code=502,
         ) from exc
 
     elapsed = time.perf_counter() - start_time
@@ -226,7 +244,8 @@ def ask(question: str, context: str) -> dict:
 
     except Exception as exc:
         raise LLMError(
-            f"Відповідь моделі не пройшла перевірку: {exc}"
+            f"Відповідь моделі не пройшла перевірку: {exc}",
+            status_code=502,
         ) from exc
 
     usage = None

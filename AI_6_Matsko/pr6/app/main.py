@@ -18,7 +18,7 @@
 
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from .llm import LLMError
@@ -119,26 +119,25 @@ def api_ask(payload: AskRequest) -> dict:
     Сторінка очікує обʼєкт із полями `answer`, `found`, `sources`,
     `retrieved`, `model`, `elapsed`, `usage` — див. `answer_to_dict`.
 
-    Збої тут не оброблено. Порожнє питання, відсутній індекс, фільтр за
-    полем, якого немає, таймаут або ліміт моделі, невалідна відповідь —
-    усе це поки що закінчується помилкою 500. Який статус і яке
-    повідомлення має отримати сторінка в кожному випадку — вирішуєте ви;
-    напрацювання з ПР3–ПР5 тут доречні.
+    Помилки повертаються з відповідними HTTP-статусами, щоб сторінка
+    не сприймала збій як успішну відповідь без результатів.
     """
     question = payload.question.strip()
 
     if not question:
-        return {
-            "error": "Питання не може бути порожнім."
-        }
+        raise HTTPException(
+            status_code=422,
+            detail="Питання не може бути порожнім.",
+        )
 
     if app.state.index is None:
-        return {
-            "error": (
+        raise HTTPException(
+            status_code=503,
+            detail=(
                 "Індекс не завантажено. "
                 "Спочатку виконайте python ingest.py"
-            )
-        }
+            ),
+        )
     try:
         result = rag.answer(
             question,
@@ -150,19 +149,22 @@ def api_ask(payload: AskRequest) -> dict:
         return answer_to_dict(result)
 
     except ValueError as exc:
-        return {
-            "error": str(exc)
-        }
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc),
+        ) from exc
 
     except LLMError as exc:
-        return {
-            "error": str(exc)
-        }
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=str(exc),
+        ) from exc
 
     except Exception as exc:
-        return {
-            "error": (
+        raise HTTPException(
+            status_code=500,
+            detail=(
                 "Виникла внутрішня помилка "
                 f"застосунку: {exc}"
-            )
-        }
+            ),
+        ) from exc
