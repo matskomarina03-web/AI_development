@@ -35,6 +35,7 @@
 
 import json
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -59,6 +60,10 @@ def limits() -> dict:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _product_name_terms(value: str) -> set[str]:
+    return set(re.findall(r"[^\W_]+", value.casefold(), flags=re.UNICODE))
 
 
 def _save(run: Run) -> None:
@@ -315,7 +320,8 @@ def _prepare_action(
                 f"замовлення. Поточний статус: {order['status_label']}.",
             )
 
-        matched_sku = None
+        product_name_terms = _product_name_terms(product_name)
+        matched_skus = []
 
         for item in order.get("items", []):
             product_result = _call_tool(
@@ -332,18 +338,27 @@ def _prepare_action(
 
             if (
                 isinstance(product, dict)
-                and product.get("name", "").casefold()
-                == product_name.casefold()
+                and isinstance(product.get("name"), str)
+                and product_name_terms
+                and product_name_terms
+                <= _product_name_terms(product["name"])
             ):
-                matched_sku = item["sku"]
-                break
+                matched_skus.append(item["sku"])
 
-        if matched_sku is None:
+        if not matched_skus:
             return _finish(
                 run,
                 "needs_info",
                 "Не вдалося знайти в замовленні товар із зазначеною "
                 "назвою. Уточніть його назву.",
+            )
+
+        if len(matched_skus) > 1:
+            return _finish(
+                run,
+                "needs_info",
+                "Назва підходить до кількох товарів у замовленні. "
+                "Уточніть назву потрібного товару.",
             )
 
         reason_map = {
@@ -357,7 +372,7 @@ def _prepare_action(
             "tool": "create_return",
             "arguments": {
                 "order_id": order_id,
-                "sku": matched_sku,
+                "sku": matched_skus[0],
                 "reason": reason_map[category],
                 "quantity": 1,
                 "comment": parsed.get("return_reason") or "",
