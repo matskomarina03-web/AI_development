@@ -24,6 +24,7 @@ pr2/eval/expected.json
 # Власний набір звернень і висновки (ПР3)
 pr3/compare/requests.json
 pr3/compare/findings.md
+pr3/logs/
 
 # Редактори та ОС
 .vscode/
