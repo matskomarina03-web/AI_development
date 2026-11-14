@@ -26,7 +26,7 @@ from ultralytics import YOLO
 
 
 WEIGHTS = "yolov8n.pt"
-DEFAULT_CONFIDENCE = 0.25
+DEFAULT_CONFIDENCE = 0.50
 
 
 class DetectionError(Exception):
