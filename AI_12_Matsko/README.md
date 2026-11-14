@@ -72,7 +72,8 @@ pip install -r requirements.txt
 Після встановлення запустіть перевірку середовища — вона підкаже, чого бракує:
 
 ```bash
-python check_env.py
+
+
 ```
 
 Якщо PowerShell не дозволяє активувати середовище (`running scripts is disabled on this system`), дозвольте скрипти для свого користувача одноразово:
