@@ -24,9 +24,6 @@
   <div id="result"></div>
 
   <script>
-    // Сторінка звертається до власного ендпоінта застосунку, а не до
-    // зовнішнього API напряму. Як показувати результат і як формулювати
-    // повідомлення про помилку — на ваш розсуд.
     const form = document.getElementById('weather-form');
     const result = document.getElementById('result');
 
@@ -42,14 +39,16 @@
 
         if (!response.ok) {
           result.className = 'error';
-          result.textContent = 'Помилка: ' + JSON.stringify(data);
+          const message = typeof data.detail === 'string'
+            ? data.detail
+            : JSON.stringify(data.detail || data);
+          result.textContent = 'Помилка: ' + message;
           return;
         }
 
-        // TODO: показати температуру й швидкість вітру у зрозумілому вигляді.
         result.textContent = `Місто: ${data.city}
-        Температура: ${data.temperature} °C 
-        Швидкість вітру: ${data.wind_speed} км/год`;
+Температура: ${data.temperature} °C
+Швидкість вітру: ${data.wind_speed} км/год`;
       } catch (error) {
         result.className = 'error';
         result.textContent = 'Не вдалося звернутися до сервера.';

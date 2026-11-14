@@ -31,14 +31,10 @@ def index() -> str:
 
 @app.get("/api/weather")
 def api_weather(city: str):
-    """Повернути поточну погоду в місті у форматі JSON.
-
-    Зараз виняток із модуля інтеграції не обробляється — застосунок просто
-    впаде з помилкою 500. Спроєктуйте обробку самі: які збої можливі, який
-    HTTP-статус відповідає кожному з них і що в такому разі отримає клієнт.
-    За критеріями приймання застосунок не має аварійно завершуватися.
-    """
+    """Повернути погоду в JSON або помилку з відповідним HTTP-статусом."""
+    if not city.strip():
+        raise HTTPException(status_code=422, detail="Вкажіть назву міста.")
     try:
-        return weather.get_current_weather(city)
+        return weather.get_current_weather(city.strip())
     except weather.WeatherError as error:
-        raise HTTPException(status_code=400, detail=str(error))
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from error
