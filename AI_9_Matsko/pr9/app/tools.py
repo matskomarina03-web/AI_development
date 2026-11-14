@@ -53,11 +53,13 @@ workflow.
 """
 
 import json
-
 from dataclasses import dataclass
+from threading import Lock
 
 from shop import service
 
+
+_RETURN_CREATION_LOCK = Lock()
 
 
 @dataclass
@@ -335,6 +337,13 @@ def validate_arguments(name, arguments):
         if not isinstance(arguments["order_id"], str):
             return "order_id має бути рядком."
 
+    if name == "list_returns":
+        if "order_id" not in arguments:
+            return "Не вказано номер замовлення."
+
+        if not isinstance(arguments["order_id"], str):
+            return "order_id має бути рядком."
+
     if name == "get_product":
         if "sku" not in arguments:
             return "Не вказано SKU товару."
@@ -376,6 +385,7 @@ def call(name: str, raw_arguments: str, ctx: Context) -> ToolResult:
         "get_product",
         "get_stock",
         "delivery_quote",
+        "list_returns",
         "create_return",
         "cancel_order",
     ]
@@ -467,6 +477,38 @@ def call(name: str, raw_arguments: str, ctx: Context) -> ToolResult:
             return make_result(
                 "ok",
                 result,
+                arguments=arguments,
+            )
+
+        if name == "list_returns":
+            order_id = arguments.get("order_id")
+            if not order_id:
+                return make_result(
+                    "rejected",
+                    reason="Не вказано номер замовлення.",
+                    arguments=arguments,
+                )
+
+            order = service.get_order(order_id)
+            if order["customer_id"] != customer_id:
+                return make_result(
+                    "rejected",
+                    reason="Це замовлення належить іншому клієнту.",
+                    arguments=arguments,
+                )
+
+            returns = service.list_returns(order_id)
+            return make_result(
+                "ok",
+                [
+                    {
+                        "return_id": item["return_id"],
+                        "sku": item["sku"],
+                        "quantity": item["quantity"],
+                        "status": item["status"],
+                    }
+                    for item in returns
+                ],
                 arguments=arguments,
             )
 
@@ -608,13 +650,22 @@ def call(name: str, raw_arguments: str, ctx: Context) -> ToolResult:
                     arguments=arguments,
                 )
 
-            return_data = service.create_return(
-                order_id=order_id,
-                sku=sku,
-                reason=reason,
-                quantity=quantity,
-                comment=comment,
-            )
+            with _RETURN_CREATION_LOCK:
+                existing = service.list_returns(order_id)
+                if any(item["sku"] == sku for item in existing):
+                    return make_result(
+                        "rejected",
+                        reason="Для цього товару в замовленні вже є заявка на повернення.",
+                        arguments=arguments,
+                    )
+
+                return_data = service.create_return(
+                    order_id=order_id,
+                    sku=sku,
+                    reason=reason,
+                    quantity=quantity,
+                    comment=comment,
+                )
 
             return make_result(
                 "ok",

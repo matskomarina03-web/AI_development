@@ -195,6 +195,33 @@ def _get_order(
     return result.content
 
 
+def _find_existing_return(
+    run: Run,
+    order_id: str,
+    sku: str,
+    started: float,
+) -> dict | None:
+    result = _call_tool(
+        run,
+        "list_returns",
+        {"order_id": order_id},
+        started,
+    )
+    if result.status != "ok" or not isinstance(result.content, list):
+        raise RuntimeError(
+            result.reason or "Не вдалося перевірити наявні заявки на повернення."
+        )
+
+    return next(
+        (
+            item
+            for item in result.content
+            if isinstance(item, dict) and item.get("sku") == sku
+        ),
+        None,
+    )
+
+
 def _parse_request(run: Run, started: float) -> dict:
     """Крок моделі: перетворює текст звернення на структуровані дані."""
     _check_limits(run, started)
@@ -361,6 +388,20 @@ def _prepare_action(
                 "Уточніть назву потрібного товару.",
             )
 
+        existing_return = _find_existing_return(
+            run,
+            order_id,
+            matched_skus[0],
+            started,
+        )
+        if existing_return is not None:
+            return _finish(
+                run,
+                "needs_info",
+                "Для цього товару в замовленні вже є заявка на повернення "
+                f"{existing_return['return_id']}.",
+            )
+
         reason_map = {
             "not_suitable": "not_suitable",
             "defect": "defect",
@@ -521,6 +562,21 @@ def resume(run_id: str, approve: bool, comment: str = "") -> Run:
                     "failed",
                     "Товар не знайдено в замовленні.",
                     "Повторна перевірка товару не пройдена.",
+                )
+
+            existing_return = _find_existing_return(
+                run,
+                order_id,
+                arguments["sku"],
+                started,
+            )
+            if existing_return is not None:
+                return _finish(
+                    run,
+                    "failed",
+                    "Для цього товару вже створено заявку на повернення "
+                    f"{existing_return['return_id']}.",
+                    "Повторну заявку не створено.",
                 )
 
         result = _call_tool(run, tool_name, arguments, started)

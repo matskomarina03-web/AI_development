@@ -56,6 +56,7 @@ pr9/test_pr9.py
 pr9/test_results.json
 pr9/test_summary.csv
 pr9/findings.md
+pr9/test_workflow_returns.py
 
 # Редактори та ОС
 .vscode/
