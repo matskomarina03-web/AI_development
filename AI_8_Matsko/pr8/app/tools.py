@@ -39,6 +39,8 @@ import json
 
 from dataclasses import dataclass
 
+from jsonschema import Draft202012Validator
+
 from shop import service
 
 
@@ -93,6 +95,7 @@ def specs() -> list[dict]:
                     "type": "object",
                     "properties": {},
                     "required": [],
+                    "additionalProperties": False,
                 },
             },
         },
@@ -109,10 +112,12 @@ def specs() -> list[dict]:
                     "properties": {
                         "order_id": {
                             "type": "string",
+                            "minLength": 1,
                             "description": "Номер замовлення.",
                         }
                     },
                     "required": ["order_id"],
+                    "additionalProperties": False,
                 },
             },
         },
@@ -128,22 +133,28 @@ def specs() -> list[dict]:
                     "properties": {
                         "query": {
                             "type": "string",
+                            "minLength": 1,
                             "description": "Що потрібно знайти.",
                         },
                         "category": {
                             "type": "string",
+                            "minLength": 1,
                             "description": "Категорія товару, якщо відома.",
                         },
                         "max_price": {
                             "type": "number",
+                            "minimum": 0,
                             "description": "Максимальна ціна, якщо її вказав клієнт.",
                         },
                         "limit": {
                             "type": "integer",
+                            "minimum": 1,
+                            "maximum": 50,
                             "description": "Максимальна кількість результатів.",
                         },
                     },
                     "required": ["query"],
+                    "additionalProperties": False,
                 },
             },
         },
@@ -159,10 +170,12 @@ def specs() -> list[dict]:
                     "properties": {
                         "sku": {
                             "type": "string",
+                            "minLength": 1,
                             "description": "Артикул товару.",
                         }
                     },
                     "required": ["sku"],
+                    "additionalProperties": False,
                 },
             },
         },
@@ -179,10 +192,12 @@ def specs() -> list[dict]:
                     "properties": {
                         "sku": {
                             "type": "string",
+                            "minLength": 1,
                             "description": "Артикул товару.",
                         }
                     },
                     "required": ["sku"],
+                    "additionalProperties": False,
                 },
             },
         },
@@ -199,6 +214,7 @@ def specs() -> list[dict]:
                     "properties": {
                         "city": {
                             "type": "string",
+                            "minLength": 1,
                             "description": "Місто доставки в Україні.",
                         },
                         "method": {
@@ -213,7 +229,8 @@ def specs() -> list[dict]:
                                 "type": "object",
                                 "properties": {
                                     "sku": {
-                                        "type": "string"
+                                        "type": "string",
+                                        "minLength": 1,
                                     },
                                     "quantity": {
                                         "type": "integer",
@@ -221,10 +238,13 @@ def specs() -> list[dict]:
                                     },
                                 },
                                 "required": ["sku", "quantity"],
+                                "additionalProperties": False,
                             },
+                            "minItems": 1,
                         },
                     },
                     "required": ["city", "method", "items"],
+                    "additionalProperties": False,
                 },
             },
         },
@@ -241,10 +261,12 @@ def specs() -> list[dict]:
                     "properties": {
                         "order_id": {
                             "type": "string",
+                            "minLength": 1,
                             "description": "Номер замовлення.",
                         },
                         "sku": {
                             "type": "string",
+                            "minLength": 1,
                             "description": "Артикул товару.",
                         },
                         "reason": {
@@ -273,12 +295,16 @@ def specs() -> list[dict]:
                         "reason",
                         "quantity",
                     ],
+                    "additionalProperties": False,
                 },
             },
         },
     ]
 
 def make_result(status, content=None, reason=None, arguments=None):
+    if status != "ok" and content is None:
+        content = reason or "Виклик інструмента не виконано."
+
     return ToolResult(
         status=status,
         content=content,
@@ -287,35 +313,58 @@ def make_result(status, content=None, reason=None, arguments=None):
     )
 
 def validate_arguments(name, arguments):
-    if name == "get_order":
-        if "order_id" not in arguments:
-            return "Не вказано номер замовлення."
+    schema = next(
+        (
+            tool["function"]["parameters"]
+            for tool in specs()
+            if tool["function"]["name"] == name
+        ),
+        None,
+    )
+    if schema is None:
+        return "Для цього інструмента немає схеми аргументів."
 
-        if not isinstance(arguments["order_id"], str):
-            return "order_id має бути рядком."
+    errors = sorted(
+        Draft202012Validator(schema).iter_errors(arguments),
+        key=lambda error: tuple(str(part) for part in error.absolute_path),
+    )
+    if not errors:
+        return None
 
-    if name == "get_product":
-        if "sku" not in arguments:
-            return "Не вказано SKU товару."
+    error = errors[0]
+    path = ".".join(str(part) for part in error.absolute_path)
+    parameter = f"Параметр {path}" if path else "Аргументи"
 
-        if not isinstance(arguments["sku"], str):
-            return "sku має бути рядком."
+    if error.validator == "required":
+        missing = sorted(set(error.validator_value) - set(error.instance))
+        return f"Не вказано обов'язковий параметр: {', '.join(missing)}."
 
-    if name == "get_stock":
-        if "sku" not in arguments:
-            return "Не вказано SKU товару."
+    if error.validator == "type":
+        expected = {
+            "array": "масивом",
+            "integer": "цілим числом",
+            "number": "числом",
+            "object": "об'єктом",
+            "string": "рядком",
+        }.get(error.validator_value, error.validator_value)
+        return f"{parameter} має бути {expected}."
 
-        if not isinstance(arguments["sku"], str):
-            return "sku має бути рядком."
+    if error.validator == "enum":
+        choices = ", ".join(str(value) for value in error.validator_value)
+        return f"{parameter} має бути одним із значень: {choices}."
 
-    if name == "search_products":
-        if "query" not in arguments:
-            return "Не вказано, що потрібно знайти."
+    if error.validator == "additionalProperties":
+        unexpected = sorted(set(error.instance) - set(error.schema["properties"]))
+        return f"Невідомий параметр: {', '.join(unexpected)}."
 
-        if not isinstance(arguments["query"], str):
-            return "query має бути рядком."
+    if error.validator in {"minimum", "maximum"}:
+        relation = "не меншим" if error.validator == "minimum" else "не більшим"
+        return f"{parameter} має бути {relation} за {error.validator_value}."
 
-    return None
+    if error.validator in {"minItems", "minLength"}:
+        return f"{parameter} не може бути порожнім."
+
+    return f"{parameter} не відповідає схемі інструмента."
 
 def call(name: str, raw_arguments: str, ctx: Context) -> ToolResult:
     """Виконати виклик інструмента, який запропонувала модель.
@@ -343,6 +392,12 @@ def call(name: str, raw_arguments: str, ctx: Context) -> ToolResult:
         return make_result(
             "rejected",
             reason="Такого інструмента немає.",
+        )
+
+    if not isinstance(raw_arguments, str):
+        return make_result(
+            "rejected",
+            reason="Аргументи мають бути рядком JSON.",
         )
 
     try:
@@ -455,7 +510,6 @@ def call(name: str, raw_arguments: str, ctx: Context) -> ToolResult:
                     "name": product["name"],
                     "category": product["category"],
                     "price": product["price"],
-                    "description": product["description"],
                 })
 
             return make_result(
@@ -482,8 +536,8 @@ def call(name: str, raw_arguments: str, ctx: Context) -> ToolResult:
                 "name": product["name"],
                 "category": product["category"],
                 "price": product["price"],
-                "weight": product["weight"],
-                "warranty": product["warranty"],
+                "weight": product["weight_kg"],
+                "warranty": product["warranty_months"],
                 "returnable": product["returnable"],
                 "description": product["description"],
             }
@@ -510,7 +564,7 @@ def call(name: str, raw_arguments: str, ctx: Context) -> ToolResult:
             result = {
                 "sku": sku,
                 "available": stock["available"],
-                "incoming": stock["incoming"],
+                "incoming": stock.get("expected_restock"),
             }
 
             return make_result(
@@ -583,16 +637,20 @@ def call(name: str, raw_arguments: str, ctx: Context) -> ToolResult:
             )
 
     except service.ShopError as error:
+        reason = str(error)
         return make_result(
             "error",
-            reason=str(error),
+            content=reason,
+            reason=reason,
             arguments=arguments,
         )
 
     except Exception as error:
+        reason = "Внутрішня помилка сервісу магазину."
         return make_result(
             "error",
-            reason="Внутрішня помилка сервісу магазину.",
+            content=reason,
+            reason=reason,
             arguments=arguments,
         )
 

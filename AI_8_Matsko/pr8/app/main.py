@@ -16,7 +16,7 @@
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
@@ -87,11 +87,21 @@ def api_ask(payload: AskRequest) -> dict:
     Сторінка очікує обʼєкт із полями `answer`, `calls`, `rounds`,
     `stopped`, `model`, `elapsed`, `usage` — див. `answer_to_dict`.
 
-    Збої тут не оброблено. Порожнє питання, невідомий клієнт, таймаут
-    або ліміт моделі, недоступний сервіс магазину — усе це поки що
-    закінчується помилкою 500. Який статус і яке повідомлення має
-    отримати сторінка в кожному випадку — вирішуєте ви. Зверніть увагу:
-    не кожна помилка інструмента — помилка запиту.
+    Некоректні питання та невідомі клієнти відхиляються до виклику моделі.
+    Помилки моделі й окремих інструментів повертаються в структурованій
+    відповіді, а не як помилка всього HTTP-запиту.
     """
-    result = assistant.answer(payload.question, payload.customer_id)
+    question = payload.question.strip()
+    if not question:
+        raise HTTPException(status_code=422, detail="Питання не може бути порожнім.")
+
+    customer_id = payload.customer_id.strip()
+    known_customer = any(
+        customer["customer_id"] == customer_id
+        for customer in service.list_customers()
+    )
+    if not known_customer:
+        raise HTTPException(status_code=404, detail="Клієнта не знайдено.")
+
+    result = assistant.answer(question, customer_id)
     return answer_to_dict(result)
