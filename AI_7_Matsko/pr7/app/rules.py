@@ -70,6 +70,57 @@ def clean_text(value: str) -> str:
 
     return value.strip()
 
+
+def _compact(value: str) -> str:
+    return re.sub(r"\s+", "", value)
+
+
+def _valid_iban(value: str) -> bool:
+    iban = _compact(value).upper()
+    if not re.fullmatch(r"UA[0-9]{27}", iban):
+        return False
+
+    rearranged = iban[4:] + iban[:4]
+    remainder = 0
+    for character in rearranged:
+        expanded = (
+            str(ord(character) - ord("A") + 10)
+            if character.isalpha()
+            else character
+        )
+        for digit in expanded:
+            remainder = (remainder * 10 + int(digit)) % 97
+    return remainder == 1
+
+
+def _valid_edrpou(value: str) -> bool:
+    code = _compact(value)
+    if not re.fullmatch(r"[0-9]{8}", code):
+        return False
+
+    weights = [1, 2, 3, 4, 5, 6, 7]
+    if code[0] in "345":
+        weights = [7, 1, 2, 3, 4, 5, 6]
+
+    total = sum(weight * int(digit) for weight, digit in zip(weights, code[:7]))
+    check_digit = total % 11
+    if check_digit == 10:
+        total = sum(
+            (weight + 2) * int(digit)
+            for weight, digit in zip(weights, code[:7])
+        )
+        check_digit = total % 11 % 10
+    return int(code[-1]) == check_digit
+
+
+def _decimal(value: object) -> Decimal:
+    normalized = re.sub(r"\s+", "", str(value)).replace(",", ".")
+    number = Decimal(normalized)
+    if not number.is_finite():
+        raise InvalidOperation
+    return number
+
+
 def check(document: dict) -> list[Issue]:
     """Застосувати правила до вилученого документа.
 
@@ -164,6 +215,26 @@ def check(document: dict) -> list[Issue]:
     buyer = document.get("buyer")
 
     if buyer:
+        buyer_code = buyer.get("code")
+        if buyer_code:
+            if re.fullmatch(r"[0-9]{8}", _compact(buyer_code)):
+                if not _valid_edrpou(buyer_code):
+                    issues.append(
+                        Issue(
+                            "buyer.code",
+                            "edrpou_checksum",
+                            "Неправильний контрольний розряд ЄДРПОУ покупця."
+                        )
+                    )
+            elif not re.fullmatch(r"[0-9]{10}", _compact(buyer_code)):
+                issues.append(
+                    Issue(
+                        "buyer.code",
+                        "code_format",
+                        "Код має бути 8 цифр ЄДРПОУ або 10 цифр РНОКПП."
+                    )
+                )
+
         if clean_text(buyer.get("name", "")) != clean_text(company["name"]):
             issues.append(
                 Issue(
@@ -189,6 +260,44 @@ def check(document: dict) -> list[Issue]:
         supplier_code = supplier.get("code")
         supplier_iban = supplier.get("iban")
 
+        if supplier_code:
+            if re.fullmatch(r"[0-9]{8}", _compact(supplier_code)):
+                if not _valid_edrpou(supplier_code):
+                    issues.append(
+                        Issue(
+                            "supplier.code",
+                            "edrpou_checksum",
+                            "Неправильний контрольний розряд ЄДРПОУ постачальника."
+                        )
+                    )
+            elif not re.fullmatch(r"[0-9]{10}", _compact(supplier_code)):
+                issues.append(
+                    Issue(
+                        "supplier.code",
+                        "code_format",
+                        "Код має бути 8 цифр ЄДРПОУ або 10 цифр РНОКПП."
+                    )
+                )
+
+        if supplier_iban:
+            compact_iban = _compact(supplier_iban)
+            if not re.fullmatch(r"UA[0-9]{27}", compact_iban, re.IGNORECASE):
+                issues.append(
+                    Issue(
+                        "supplier.iban",
+                        "iban_format",
+                        "IBAN має містити UA та 27 цифр."
+                    )
+                )
+            elif not _valid_iban(supplier_iban):
+                issues.append(
+                    Issue(
+                        "supplier.iban",
+                        "iban_checksum",
+                        "Контрольна сума IBAN неправильна."
+                    )
+                )
+
         found_supplier = None
 
         for item in suppliers:
@@ -207,10 +316,10 @@ def check(document: dict) -> list[Issue]:
                     "Постачальника немає у довіднику."
                 )
             )
-        else:
-            iban1 = supplier_iban.replace(" ", "").replace("\u00a0", "")
-            iban2 = found_supplier["iban"].replace(" ", "").replace("\u00a0", "")
-            if iban1.upper() != iban2.upper():
+        elif supplier_iban:
+            iban1 = _compact(supplier_iban).upper()
+            iban2 = _compact(found_supplier["iban"]).upper()
+            if iban1 != iban2:
                 issues.append(
                     Issue(
                         "supplier.iban",
@@ -222,13 +331,14 @@ def check(document: dict) -> list[Issue]:
     items = document.get("items", [])
 
     total_items = Decimal("0")
+    items_valid = True
 
     for number, item in enumerate(items):
 
         try:
-            quantity = Decimal(str(item.get("quantity")).replace(" ", "").replace("\u00a0", "").replace(",", "."))           
-            price = Decimal(str(item.get("price")).replace(" ", "").replace("\u00a0", "").replace(",", "."))
-            amount = Decimal(str(item.get("amount")).replace(" ", "").replace("\u00a0", "").replace(",", "."))
+            quantity = _decimal(item.get("quantity"))
+            price = _decimal(item.get("price"))
+            amount = _decimal(item.get("amount"))
 
             calculated = quantity * price
 
@@ -247,6 +357,7 @@ def check(document: dict) -> list[Issue]:
             total_items += amount
 
         except (InvalidOperation, TypeError):
+            items_valid = False
             issues.append(
                 Issue(
                     f"items.{number}",
@@ -255,78 +366,103 @@ def check(document: dict) -> list[Issue]:
                 )
             )
 
-    try:
-        total_without_vat = Decimal(
-            str(document.get("total_without_vat"))
+    total_without_vat = None
+    if document.get("total_without_vat") not in (None, ""):
+        try:
+            total_without_vat = _decimal(document["total_without_vat"])
+        except (InvalidOperation, TypeError):
+            issues.append(
+                Issue(
+                    "total_without_vat",
+                    "number",
+                    "Неправильне числове значення суми без ПДВ."
+                )
+            )
+
+    if (
+        items_valid
+        and total_without_vat is not None
+        and total_items.quantize(Decimal("0.01"))
+        != total_without_vat.quantize(Decimal("0.01"))
+    ):
+        issues.append(
+            Issue(
+                "total_without_vat",
+                "arithmetic",
+                "Сума позицій не дорівнює сумі без ПДВ."
+            )
         )
 
-        if total_items.quantize(Decimal("0.01")) != total_without_vat.quantize(
+    vat = None
+    if document.get("vat") not in (None, ""):
+        try:
+            vat = _decimal(document["vat"])
+        except (InvalidOperation, TypeError):
+            issues.append(
+                Issue(
+                    "vat",
+                    "number",
+                    "Неправильне числове значення ПДВ."
+                )
+            )
+
+    supplier_info = None
+
+    if supplier:
+        for item in suppliers:
+            if (
+                item["name"] == supplier.get("name")
+                or item["code"] == supplier.get("code")
+            ):
+                supplier_info = item
+                break
+
+    if supplier_info and total_without_vat is not None and vat is not None:
+        if supplier_info["vat_payer"]:
+            expected_vat = total_without_vat * Decimal("0.20")
+        else:
+            expected_vat = Decimal("0")
+
+        if vat.quantize(Decimal("0.01")) != expected_vat.quantize(
             Decimal("0.01")
         ):
             issues.append(
                 Issue(
-                    "total_without_vat",
-                    "arithmetic",
-                    "Сума позицій не дорівнює сумі без ПДВ."
+                    "vat",
+                    "vat",
+                    "Неправильно розрахований ПДВ."
                 )
             )
 
-    except (InvalidOperation, TypeError):
-        total_without_vat = None
-
-    try:
-        vat = Decimal(str(document.get("vat")))
-
-        supplier_info = None
-
-        if supplier:
-            for item in suppliers:
-                if (
-                    item["name"] == supplier.get("name")
-                    or item["code"] == supplier.get("code")
-                ):
-                    supplier_info = item
-                    break
-
-        if supplier_info:
-            if supplier_info["vat_payer"]:
-                expected_vat = total_without_vat * Decimal("0.20")
-            else:
-                expected_vat = Decimal("0")
-
-            if vat.quantize(Decimal("0.01")) != expected_vat.quantize(
-                Decimal("0.01")
-            ):
-                issues.append(
-                    Issue(
-                        "vat",
-                        "vat",
-                        "Неправильно розрахований ПДВ."
-                    )
+    total_due = None
+    if document.get("total_due") not in (None, ""):
+        try:
+            total_due = _decimal(document["total_due"])
+        except (InvalidOperation, TypeError):
+            issues.append(
+                Issue(
+                    "total_due",
+                    "number",
+                    "Неправильне числове значення суми до сплати."
                 )
+            )
 
-    except (InvalidOperation, TypeError):
-        vat = None
-
-    try:
-        total_due = Decimal(str(document.get("total_due")))
-
-        if total_without_vat is not None and vat is not None:
-            expected_total = total_without_vat + vat
-
-            if total_due.quantize(Decimal("0.01")) != expected_total.quantize(
-                Decimal("0.01")
-            ):
-                issues.append(
-                    Issue(
-                        "total_due",
-                        "arithmetic",
-                        "Сума без ПДВ + ПДВ не дорівнює сумі до сплати."
-                    )
+    if (
+        total_due is not None
+        and total_without_vat is not None
+        and vat is not None
+    ):
+        expected_total = total_without_vat + vat
+        if total_due.quantize(Decimal("0.01")) != expected_total.quantize(
+            Decimal("0.01")
+        ):
+            issues.append(
+                Issue(
+                    "total_due",
+                    "arithmetic",
+                    "Сума без ПДВ + ПДВ не дорівнює сумі до сплати."
                 )
-
-    except (InvalidOperation, TypeError):
-        pass
+            )
 
     return issues
     
