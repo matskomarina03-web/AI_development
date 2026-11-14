@@ -39,11 +39,10 @@ load_dotenv()
 
 INDEX_DIR = Path(__file__).parent.parent / "index"
 
-# Скільки результатів повертати за замовчуванням і чи відсікати слабкі.
-# Порожній поріг означає «без порога».
+# Скільки результатів повертати за замовчуванням і поріг схожості.
 DEFAULT_TOP_K = int(os.getenv("SEARCH_TOP_K", "5"))
-_threshold = os.getenv("SIMILARITY_THRESHOLD", "").strip()
-SIMILARITY_THRESHOLD: float | None = float(_threshold) if _threshold else None
+_threshold = os.getenv("SIMILARITY_THRESHOLD", "").strip() or "0.3"
+SIMILARITY_THRESHOLD = float(_threshold)
 
 
 @dataclass

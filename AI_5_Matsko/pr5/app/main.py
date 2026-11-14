@@ -109,10 +109,8 @@ def api_search(payload: SearchRequest) -> dict:
     влучень або `null`, якщо спосіб не запитували) та `elapsed` — час
     кожного способу в секундах.
 
-    Збої тут не оброблено. Порожній запит, відсутній індекс, невідомий
-    режим, фільтр за полем, якого немає в метаданих, — усе це поки що
-    закінчується помилкою 500. Який статус і яке повідомлення має
-    отримати сторінка в кожному випадку — вирішуєте ви.
+    Некоректні запити повертають зрозумілий клієнтський статус, а
+    непередбачені помилки пошуку залишаються помилками сервера.
     """
     if not payload.query.strip():
         raise HTTPException(
@@ -138,23 +136,29 @@ def api_search(payload: SearchRequest) -> dict:
     if payload.mode in ("semantic", "both"):
         started = time.perf_counter()
         vector = embeddings.embed_query(payload.query)
-        hits = index.search(
-            idx, vector,
-            top_k=payload.top_k,
-            filters=payload.filters or None,
-            threshold=payload.threshold if payload.threshold is not None
-            else index.SIMILARITY_THRESHOLD,
-        )
+        try:
+            hits = index.search(
+                idx, vector,
+                top_k=payload.top_k,
+                filters=payload.filters or None,
+                threshold=payload.threshold if payload.threshold is not None
+                else index.SIMILARITY_THRESHOLD,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         result["elapsed"]["semantic"] = time.perf_counter() - started
         result["semantic"] = [hit_to_dict(h) for h in hits]
 
     if payload.mode in ("keyword", "both"):
         started = time.perf_counter()
-        hits = keyword.search(
-            app.state.keyword_index, payload.query,
-            top_k=payload.top_k,
-            filters=payload.filters or None,
-        )
+        try:
+            hits = keyword.search(
+                app.state.keyword_index, payload.query,
+                top_k=payload.top_k,
+                filters=payload.filters or None,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         result["elapsed"]["keyword"] = time.perf_counter() - started
         result["keyword"] = [hit_to_dict(h) for h in hits]
 
