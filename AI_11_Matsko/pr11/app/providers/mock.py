@@ -53,7 +53,7 @@ from typing import Iterator
 from dotenv import load_dotenv
 
 from .base import Chunk, ProviderError, Request, Result
-from ..samples import all_samples
+from ..samples import get
 
 load_dotenv()
 
@@ -118,7 +118,7 @@ class MockProvider:
             self._pause(FIRST_DELAY_MS, request)
 
         request_id = str(request.metadata.get("request_id", ""))
-        sample = next((item for item in all_samples() if str(item["id"]) == request_id), None)
+        sample = get(request_id)
         if sample:
             text = sample.get("reply_example", "")
         elif request.messages:

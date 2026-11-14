@@ -34,6 +34,8 @@
 
 import hashlib
 import json
+import logging
+import math
 import os
 import threading
 import time
@@ -45,6 +47,7 @@ from dotenv import load_dotenv
 from .providers.base import Request, Result
 
 load_dotenv()
+_log = logging.getLogger("app.cache")
 
 ENABLED = os.getenv("CACHE_ENABLED", "1") == "1"
 TTL_SECONDS = float(os.getenv("CACHE_TTL_SECONDS", "3600"))
@@ -70,10 +73,43 @@ def _load() -> None:
     if not path.exists():
         _loaded = True
         return
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        _log.warning("cache.file_invalid", extra={"cache_file": str(path)}, exc_info=True)
+        _entries = {}
+        _loaded = True
+        return
     if not isinstance(data, dict):
-        raise ValueError(f"Файл кешу має містити JSON-об'єкт: {path}")
-    _entries = {key: value for key, value in data.items() if isinstance(value, dict)}
+        _log.warning("cache.file_invalid", extra={"cache_file": str(path), "reason": "not_object"})
+        _entries = {}
+        _loaded = True
+        return
+
+    entries = {}
+    invalid_entries = 0
+    for key, value in data.items():
+        if not isinstance(value, dict):
+            invalid_entries += 1
+            continue
+        created_at = value.get("created_at")
+        result = value.get("result")
+        if (not isinstance(created_at, (int, float)) or isinstance(created_at, bool)
+                or not math.isfinite(created_at) or not isinstance(result, dict)):
+            invalid_entries += 1
+            continue
+        try:
+            Result(**result)
+        except (TypeError, ValueError):
+            invalid_entries += 1
+            continue
+        entries[key] = value
+    if invalid_entries:
+        _log.warning("cache.entries_invalid", extra={
+            "cache_file": str(path),
+            "discarded": invalid_entries,
+        })
+    _entries = entries
     _loaded = True
 
 
