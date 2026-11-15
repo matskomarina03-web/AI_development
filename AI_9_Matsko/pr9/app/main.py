@@ -130,8 +130,17 @@ def api_runs(status: str | None = None) -> list[dict]:
 
 @app.get("/api/runs/{run_id}")
 def api_run(run_id: str) -> dict:
-    """Стан одного звернення. Невідомий номер поки що дає 500."""
-    return run_to_dict(store.load(run_id))
+    """Стан одного звернення."""
+    run = store.load(run_id)
+
+    if run is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Звернення не знайдено."
+        )
+
+    return run_to_dict(run)
+
 
 
 @app.post("/api/runs/{run_id}/decision")
